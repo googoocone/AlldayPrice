@@ -1,13 +1,11 @@
-import { createClient } from '@supabase/supabase-js';
-import type { Database } from './types';
+import { createBrowserClient } from '@supabase/ssr';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+export function createClient() {
+  return createBrowserClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  );
+}
 
-export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey);
-
-// 서버 사이드용 클라이언트 (Service Role)
-export const createServiceClient = () => {
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-  return createClient<Database>(supabaseUrl, supabaseServiceKey);
-};
+// 기존 코드 호환성을 위해 supabase도 export
+export const supabase = createClient();

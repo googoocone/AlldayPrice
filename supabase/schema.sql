@@ -60,6 +60,35 @@ CREATE TABLE IF NOT EXISTS wishlist (
   UNIQUE(user_id, product_id)
 );
 
+-- 6. push_subscriptions 테이블 (푸시 알림 구독)
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID UNIQUE,
+  endpoint TEXT NOT NULL,
+  p256dh TEXT NOT NULL,
+  auth TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 7. search_logs 테이블 (검색 기록)
+CREATE TABLE IF NOT EXISTS search_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  query TEXT NOT NULL,
+  user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 인기 검색어 View (최근 7일간 검색어 순위)
+CREATE OR REPLACE VIEW popular_searches_view AS
+SELECT
+  query,
+  COUNT(*) as search_count
+FROM search_logs
+WHERE created_at > (NOW() - INTERVAL '7 days')
+GROUP BY query
+ORDER BY search_count DESC
+LIMIT 10;
+
 -- ========================================
 -- 인덱스 생성
 -- ========================================

@@ -24,6 +24,11 @@ class Database:
         result = self.client.table("products").select("*").eq("oliveyoung_id", oliveyoung_id).execute()
         return result.data[0] if result.data else None
     
+    def get_all_oliveyoung_ids(self) -> Dict[str, str]:
+        """모든 상품의 oliveyoung_id -> product_id 맵핑 조회 (캐싱용)"""
+        result = self.client.table("products").select("id, oliveyoung_id").execute()
+        return {item["oliveyoung_id"]: item["id"] for item in result.data} if result.data else {}
+    
     def upsert_product(self, product_data: Dict) -> Dict:
         """상품 추가 또는 업데이트"""
         existing = self.get_product_by_oliveyoung_id(product_data["oliveyoung_id"])

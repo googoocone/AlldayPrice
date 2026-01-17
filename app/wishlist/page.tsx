@@ -8,6 +8,9 @@ import { removeFromWishlist } from '@/components/WishlistButton';
 import type { ProductWithPrice } from '@/lib/types';
 import { formatPrice } from '@/lib/utils';
 import { getProductsByIds } from '@/lib/api';
+import { useAuth } from '@/lib/auth-context';
+import { getWishlistFromDB, removeFromWishlistDB } from '@/lib/wishlist';
+import WishlistPriceChart from '@/components/WishlistPriceChart';
 
 const WISHLIST_KEY = 'olp_wishlist';
 
@@ -33,8 +36,8 @@ function SelectableProductCard({
                         onToggle();
                     }}
                     className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all ${isSelected
-                            ? 'bg-primary border-primary'
-                            : 'border-gray-300 hover:border-primary'
+                        ? 'bg-primary border-primary'
+                        : 'border-gray-300 hover:border-primary'
                         }`}
                 >
                     {isSelected && (
@@ -118,31 +121,44 @@ function SelectableProductCard({
 }
 
 export default function WishlistPage() {
+    const { user } = useAuth();
     const [wishlistIds, setWishlistIds] = useState<string[]>([]);
     const [products, setProducts] = useState<ProductWithPrice[]>([]);
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
     const [isLoading, setIsLoading] = useState(true);
     const [showOnlyLowest, setShowOnlyLowest] = useState(false);
 
-    // 로컬스토리지에서 찜 목록 로드 + DB에서 상품 정보 가져오기
+    // DB 또는 localStorage에서 찜 목록 로드
     const loadWishlist = useCallback(async () => {
         setIsLoading(true);
-        const saved = localStorage.getItem(WISHLIST_KEY);
-        if (saved) {
-            const ids: string[] = JSON.parse(saved);
-            setWishlistIds(ids);
+        let ids: string[] = [];
 
-            if (ids.length > 0) {
-                try {
-                    const productData = await getProductsByIds(ids);
-                    setProducts(productData);
-                } catch (error) {
-                    console.error('찜 목록 상품 로드 오류:', error);
-                }
+        if (user) {
+            // 로그인 시: DB에서 로드
+            ids = await getWishlistFromDB(user.id);
+        } else {
+            // 비로그인: localStorage에서 로드
+            const saved = localStorage.getItem(WISHLIST_KEY);
+            if (saved) {
+                ids = JSON.parse(saved);
             }
         }
+
+        setWishlistIds(ids);
+
+        if (ids.length > 0) {
+            try {
+                const productData = await getProductsByIds(ids);
+                setProducts(productData);
+            } catch (error) {
+                console.error('찜 목록 상품 로드 오류:', error);
+            }
+        } else {
+            setProducts([]);
+        }
+
         setIsLoading(false);
-    }, []);
+    }, [user]);
 
     useEffect(() => {
         loadWishlist();
@@ -156,8 +172,12 @@ export default function WishlistPage() {
     }, [loadWishlist]);
 
     // 상품 삭제
-    const handleRemove = (productId: string) => {
-        removeFromWishlist(productId);
+    const handleRemove = async (productId: string) => {
+        if (user) {
+            await removeFromWishlistDB(user.id, productId);
+        } else {
+            removeFromWishlist(productId);
+        }
         setWishlistIds(prev => prev.filter(id => id !== productId));
         setProducts(prev => prev.filter(p => p.id !== productId));
         setSelectedIds(prev => {
@@ -251,8 +271,8 @@ export default function WishlistPage() {
                                 className="text-sm text-gray-600 hover:text-primary flex items-center gap-1"
                             >
                                 <span className={`w-4 h-4 rounded border flex items-center justify-center ${selectedIds.size === filteredProducts.length && filteredProducts.length > 0
-                                        ? 'bg-primary border-primary'
-                                        : 'border-gray-300'
+                                    ? 'bg-primary border-primary'
+                                    : 'border-gray-300'
                                     }`}>
                                     {selectedIds.size === filteredProducts.length && filteredProducts.length > 0 && (
                                         <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -274,8 +294,8 @@ export default function WishlistPage() {
                         <button
                             onClick={() => setShowOnlyLowest(!showOnlyLowest)}
                             className={`text-sm px-3 py-1 rounded-full transition-colors ${showOnlyLowest
-                                    ? 'bg-accent-coral text-white'
-                                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                                ? 'bg-accent-coral text-white'
+                                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                                 }`}
                         >
                             {showOnlyLowest ? '전체 보기' : '최저가만 보기'}
@@ -317,6 +337,14 @@ export default function WishlistPage() {
                         >
                             상품 둘러보기
                         </Link>
+                    </div>
+                )}
+                {/* 차트: 선택된 상품이 있을 때만 표시 */}
+                {selectedIds.size > 0 && products.length > 0 && (
+                    <div className="mt-8 mb-4">
+                        <WishlistPriceChart
+                            products={products.filter(p => selectedIds.has(p.id))}
+                        />
                     </div>
                 )}
             </main>

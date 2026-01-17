@@ -129,6 +129,7 @@ export default function ProductDetailPage({ params }: { params: Promise<{ id: st
                             alt={product.name}
                             fill
                             className="object-cover"
+                            sizes="(max-width: 512px) 100vw, 512px"
                             priority
                         />
                     ) : (

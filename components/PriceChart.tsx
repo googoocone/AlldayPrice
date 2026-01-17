@@ -62,7 +62,7 @@ export default function PriceChart({ data, lowestPrice }: PriceChartProps) {
     }
 
     return (
-        <div className="w-full h-48">
+        <div className="w-full h-48 min-h-[192px]">
             <ResponsiveContainer width="100%" height="100%">
                 <LineChart
                     data={chartData}

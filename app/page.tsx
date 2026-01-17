@@ -6,51 +6,44 @@ import Header from '@/components/Header';
 import BottomNav from '@/components/BottomNav';
 import CategoryPills from '@/components/CategoryPills';
 import ProductCard from '@/components/ProductCard';
+import ProductGridCard from '@/components/ProductGridCard';
 import type { Category, ProductWithPrice } from '@/lib/types';
-import { getOrderedProductIds, getProductsByIds } from '@/lib/api';
+import { getProductsPaginated } from '@/lib/api';
+
+type ViewMode = 'list' | 'grid';
 
 export default function HomePage() {
   const [selectedCategory, setSelectedCategory] = useState<Category>('전체');
+  const [viewMode, setViewMode] = useState<ViewMode>('list');
 
   // State for Infinite Scroll
-  const [allIds, setAllIds] = useState<string[]>([]);
   const [products, setProducts] = useState<ProductWithPrice[]>([]);
-  const [loading, setLoading] = useState(true); // Initial load or category change
-  const [loadingMore, setLoadingMore] = useState(false); // Infinite scroll load
+  const [totalCount, setTotalCount] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
 
   // Observer ref
   const observerTarget = useRef<HTMLDivElement>(null);
 
-  // 1. 카테고리 변경 시: ID 목록 가져오기 및 첫 페이지 로드
+  // 1. 카테고리 변경 시: 첫 페이지 로드
   useEffect(() => {
     let isCancelled = false;
 
     async function initializeCategory() {
       setLoading(true);
-      setProducts([]); // 기존 리스트 초기화
-      setAllIds([]);
+      setProducts([]);
+      setTotalCount(0);
       setHasMore(false);
 
       try {
-        // 1. 전체 ID 리스트 가져오기 (정렬됨)
-        const ids = await getOrderedProductIds(selectedCategory);
+        const result = await getProductsPaginated(selectedCategory, 0, 20);
 
         if (isCancelled) return;
-        setAllIds(ids);
 
-        // 2. 첫 20개 로드
-        const firstChunkIds = ids.slice(0, 20);
-        if (firstChunkIds.length > 0) {
-          const firstChunkData = await getProductsByIds(firstChunkIds);
-          if (!isCancelled) {
-            setProducts(firstChunkData);
-          }
-        }
-
-        if (!isCancelled) {
-          setHasMore(ids.length > 20);
-        }
+        setProducts(result.products);
+        setTotalCount(result.total);
+        setHasMore(result.hasMore);
       } catch (error) {
         console.error('초기화 오류:', error);
       } finally {
@@ -71,27 +64,17 @@ export default function HomePage() {
 
     setLoadingMore(true);
     try {
-      const currentLength = products.length;
-      const nextIds = allIds.slice(currentLength, currentLength + 20);
+      const offset = products.length;
+      const result = await getProductsPaginated(selectedCategory, offset, 20);
 
-      if (nextIds.length === 0) {
-        setHasMore(false);
-        return;
-      }
-
-      const nextChunkData = await getProductsByIds(nextIds);
-
-      setProducts(prev => [...prev, ...nextChunkData]);
-
-      if (currentLength + nextChunkData.length >= allIds.length) {
-        setHasMore(false);
-      }
+      setProducts(prev => [...prev, ...result.products]);
+      setHasMore(result.hasMore);
     } catch (error) {
       console.error('추가 로드 오류:', error);
     } finally {
       setLoadingMore(false);
     }
-  }, [allIds, products.length, hasMore, loading, loadingMore]);
+  }, [selectedCategory, products.length, hasMore, loading, loadingMore]);
 
   // 3. Intersection Observer 설정
   useEffect(() => {
@@ -169,20 +152,55 @@ export default function HomePage() {
         {/* 카테고리 필터 */}
         <CategoryPills selected={selectedCategory} onSelect={setSelectedCategory} />
 
-        {/* 섹션 타이틀 */}
+        {/* 섹션 타이틀 + 뷰 토글 */}
         <div className="px-4 mt-2 mb-3 flex items-center justify-between">
-          <h2 className="text-lg font-bold text-gray-900">
-            🔥 오늘의 최저가
-          </h2>
-          <span className="text-sm text-gray-400">
-            {loading ? '로딩 중...' : `총 ${allIds.length}개`}
-          </span>
+          <div className="flex items-center gap-2">
+            <h2 className="text-lg font-bold text-gray-900">
+              🔥 오늘의 최저가
+            </h2>
+            <span className="text-sm text-gray-400">
+              {loading ? '로딩 중...' : `총 ${totalCount}개`}
+            </span>
+          </div>
+
+          {/* 뷰 모드 토글 */}
+          <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-1">
+            <button
+              onClick={() => setViewMode('list')}
+              className={`p-1.5 rounded-md transition-all ${viewMode === 'list'
+                  ? 'bg-white shadow-sm text-primary'
+                  : 'text-gray-400 hover:text-gray-600'
+                }`}
+              aria-label="리스트 보기"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+              </svg>
+            </button>
+            <button
+              onClick={() => setViewMode('grid')}
+              className={`p-1.5 rounded-md transition-all ${viewMode === 'grid'
+                  ? 'bg-white shadow-sm text-primary'
+                  : 'text-gray-400 hover:text-gray-600'
+                }`}
+              aria-label="그리드 보기"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
+              </svg>
+            </button>
+          </div>
         </div>
 
         {/* 상품 리스트 */}
-        <div className="px-4 space-y-3 pb-6">
+        <div className={`px-4 pb-6 ${viewMode === 'grid'
+            ? 'grid grid-cols-2 gap-3'
+            : 'space-y-3'
+          }`}>
           {products.map((product) => (
-            <ProductCard key={product.id} product={product} />
+            viewMode === 'grid'
+              ? <ProductGridCard key={product.id} product={product} />
+              : <ProductCard key={product.id} product={product} />
           ))}
 
           {/* 로딩 스켈레톤 & Sentinel */}

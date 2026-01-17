@@ -32,7 +32,7 @@ const navItems = [
         ),
     },
     {
-        href: '/my',
+        href: '/mypage',
         label: '마이',
         icon: (
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">

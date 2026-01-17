@@ -21,10 +21,16 @@ from database import Database
 class ProductScraper:
     """올리브영 상품 스크래퍼"""
     
-    def __init__(self, page: Page, db: Database):
+    def __init__(self, page: Page, db: Database, full_refresh: bool = False):
         self.page = page
         self.db = db
         self.collected_brands: Set[str] = set()
+        self.full_refresh = full_refresh  # True면 모든 상품 정보 갱신
+        
+        # 기존 상품 캐싱 (oliveyoung_id -> product_id 맵핑)
+        print("📦 기존 상품 목록 로딩 중...")
+        self.existing_products: Dict[str, str] = db.get_all_oliveyoung_ids()
+        print(f"  ✅ 기존 상품 {len(self.existing_products)}개 로드 완료")
     
     async def random_delay(self):
         """랜덤 딜레이 (봇 감지 방지)"""
@@ -180,30 +186,57 @@ class ProductScraper:
         numbers = re.sub(r"[^\d]", "", text)
         return int(numbers) if numbers else 0
     
-    async def save_products_to_db(self, products: List[Dict]) -> int:
-        """수집한 상품들을 DB에 저장"""
-        saved_count = 0
+    async def save_products_to_db(self, products: List[Dict]) -> Dict[str, int]:
+        """수집한 상품들을 DB에 저장
+        
+        Returns:
+            Dict with 'new_count' and 'updated_count' stats
+        """
+        stats = {"new_count": 0, "updated_count": 0}
         
         for product in products:
             try:
-                # 상품 저장/업데이트
-                saved_product = self.db.upsert_product(product)
+                oliveyoung_id = product["oliveyoung_id"]
                 
-                if saved_product:
-                    # 가격 이력 저장
+                if oliveyoung_id in self.existing_products:
+                    # 🔄 기존 상품: 가격만 업데이트 (상품 정보는 건드리지 않음)
+                    product_id = self.existing_products[oliveyoung_id]
+                    
+                    if self.full_refresh:
+                        # 전체 갱신 모드: 상품 정보도 업데이트
+                        self.db.upsert_product(product)
+                    
+                    # 가격 이력만 저장
                     self.db.add_price_history(
-                        product_id=saved_product["id"],
+                        product_id=product_id,
                         price=product["price"],
                         original_price=product["original_price"],
                         discount_rate=product["discount_rate"],
                         is_on_sale=product["is_on_sale"]
                     )
-                    saved_count += 1
+                    stats["updated_count"] += 1
+                else:
+                    # ✨ 신규 상품: 전체 정보 저장
+                    saved_product = self.db.upsert_product(product)
+                    
+                    if saved_product:
+                        # 가격 이력 저장
+                        self.db.add_price_history(
+                            product_id=saved_product["id"],
+                            price=product["price"],
+                            original_price=product["original_price"],
+                            discount_rate=product["discount_rate"],
+                            is_on_sale=product["is_on_sale"]
+                        )
+                        
+                        # 캐시에 추가 (같은 세션 내 중복 방지)
+                        self.existing_products[oliveyoung_id] = saved_product["id"]
+                        stats["new_count"] += 1
                     
             except Exception as e:
                 print(f"  ❌ DB 저장 실패: {product.get('name', 'Unknown')[:30]} - {e}")
         
-        return saved_count
+        return stats
 
 
 class CouponScraper:

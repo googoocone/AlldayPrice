@@ -87,6 +87,7 @@ export interface ProductWithPrice extends Product {
     coupon_price?: number; // 쿠폰 적용가
     coupon_discount?: number; // 쿠폰 할인금액
     has_coupon?: boolean; // 쿠폰 존재 여부
+    price_history?: PriceHistory[]; // 가격 이력
 }
 
 // 카테고리 목록 (올리브영 21개 카테고리)

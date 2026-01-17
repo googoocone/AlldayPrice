@@ -3,7 +3,9 @@
 하루 1회 실행하여 올리브영 상품 및 쿠폰 정보를 수집합니다.
 """
 import os
+import sys
 import asyncio
+import argparse
 from datetime import datetime
 from typing import Dict
 
@@ -29,8 +31,12 @@ def log_message(message: str, log_file: str = None):
             f.write(log_line + "\n")
 
 
-async def run_crawler():
-    """크롤러 메인 실행 함수"""
+async def run_crawler(full_refresh: bool = False):
+    """크롤러 메인 실행 함수
+    
+    Args:
+        full_refresh: True면 모든 상품 정보 갱신 (기본: 가격만 업데이트)
+    """
     setup_logging()
     
     # 로그 파일 경로
@@ -38,14 +44,18 @@ async def run_crawler():
     log_file = os.path.join(LOGS_PATH, f"crawl_{today}.log")
     
     log_message("=" * 60, log_file)
-    log_message("🚀 올프(All Day Price) 크롤러 시작", log_file)
+    if full_refresh:
+        log_message("🚀 올프(All Day Price) 크롤러 시작 [전체 갱신 모드]", log_file)
+    else:
+        log_message("🚀 올프(All Day Price) 크롤러 시작 [가격만 업데이트 모드]", log_file)
     log_message("=" * 60, log_file)
     
     start_time = datetime.now()
     
     # 결과 통계
     stats = {
-        "total_products": 0,
+        "new_products": 0,
+        "updated_products": 0,
         "total_coupons": 0,
         "categories_done": 0,
         "errors": []
@@ -68,7 +78,7 @@ async def run_crawler():
         # 2. 상품 크롤링
         log_message("\n📦 상품 크롤링 시작...", log_file)
         
-        product_scraper = ProductScraper(page, db)
+        product_scraper = ProductScraper(page, db, full_refresh=full_refresh)
         sample_products_by_brand: Dict[str, str] = {}  # 브랜드별 샘플 상품 ID
         
         for category_name, category_code in CATEGORIES.items():
@@ -76,9 +86,10 @@ async def run_crawler():
                 log_message(f"\n📂 [{category_name}] 카테고리 크롤링...", log_file)
                 
                 products = await product_scraper.scrape_ranking_page(category_name, category_code)
-                saved = await product_scraper.save_products_to_db(products)
+                save_stats = await product_scraper.save_products_to_db(products)
                 
-                stats["total_products"] += saved
+                stats["new_products"] += save_stats["new_count"]
+                stats["updated_products"] += save_stats["updated_count"]
                 stats["categories_done"] += 1
                 
                 # 브랜드별 샘플 상품 저장 (쿠폰 크롤링용)
@@ -87,7 +98,8 @@ async def run_crawler():
                     if brand not in sample_products_by_brand:
                         sample_products_by_brand[brand] = product["oliveyoung_id"]
                 
-                log_message(f"  ✅ [{category_name}] {saved}개 상품 저장 완료", log_file)
+                total_saved = save_stats["new_count"] + save_stats["updated_count"]
+                log_message(f"  ✅ [{category_name}] {total_saved}개 저장 (신규: {save_stats['new_count']}, 업데이트: {save_stats['updated_count']})", log_file)
                 
             except Exception as e:
                 error_msg = f"[{category_name}] 크롤링 오류: {e}"
@@ -113,7 +125,8 @@ async def run_crawler():
         log_message("=" * 60, log_file)
         log_message(f"  ⏱️ 소요 시간: {duration}", log_file)
         log_message(f"  📂 완료 카테고리: {stats['categories_done']}/{len(CATEGORIES)}", log_file)
-        log_message(f"  📦 수집 상품: {stats['total_products']}개", log_file)
+        log_message(f"  📦 신규 상품: {stats['new_products']}개", log_file)
+        log_message(f"  🔄 가격 업데이트: {stats['updated_products']}개", log_file)
         log_message(f"  🎫 수집 쿠폰: {stats['total_coupons']}개", log_file)
         
         if stats["errors"]:
@@ -139,7 +152,15 @@ async def run_crawler():
 
 def main():
     """프로그램 진입점"""
-    asyncio.run(run_crawler())
+    parser = argparse.ArgumentParser(description="올프(All Day Price) 크롤러")
+    parser.add_argument(
+        "--full-refresh",
+        action="store_true",
+        help="전체 갱신 모드: 모든 상품 정보를 업데이트합니다 (기본: 가격만 업데이트)"
+    )
+    args = parser.parse_args()
+    
+    asyncio.run(run_crawler(full_refresh=args.full_refresh))
 
 
 if __name__ == "__main__":

@@ -98,47 +98,193 @@ function transformProductData(products: any[], coupons: any[], lowestPrices: any
             has_coupon: !!coupon && !!couponPrice,
             coupon_price: couponPrice,
             coupon_discount: couponDiscount,
+            price_history: priceHistory,
         } as ProductWithPrice;
     });
 }
 
 /**
- * 전체 상품 목록 (ID, Category만 Light하게 조회) - 정렬용
+ * 카테고리별 상품 수 조회
  */
-export async function getProductList(): Promise<{ id: string; category: string; updated_at: string }[]> {
-    const { data, error } = await supabase
+export async function getCategoryCount(category: string): Promise<number> {
+    let query = supabase
         .from('products')
-        .select('id, category, updated_at')
-        .order('updated_at', { ascending: false });
+        .select('id', { count: 'exact', head: true });
 
-    if (error) {
-        console.error('상품 리스트 조회 오류:', error);
-        return [];
+    if (category && category !== '전체') {
+        query = query.eq('category', category);
     }
-    return data || [];
+
+    const { count, error } = await query;
+    if (error) {
+        console.error('카테고리 카운트 조회 오류:', error);
+        return 0;
+    }
+    return count || 0;
 }
 
 /**
- * 전체 상품 ID 목록 (카테고리별 정렬됨)
+ * 카테고리별 상품 페이지네이션 조회 (직접 DB에서 필터링)
+ * - 전체: 카테고리 순서대로 각 카테고리에서 가져옴
+ * - 특정 카테고리: 해당 카테고리에서 offset 기반 페이지네이션
  */
-export async function getOrderedProductIds(category: string): Promise<string[]> {
-    const list = await getProductList();
+export async function getProductsPaginated(
+    category: string,
+    offset: number = 0,
+    limit: number = 20
+): Promise<{ products: ProductWithPrice[]; total: number; hasMore: boolean }> {
 
-    // 1. 카테고리 필터링
-    const filtered = (category && category !== '전체')
-        ? list.filter(p => p.category === category)
-        : list;
-
-    // 2. 정렬 (전체인 경우 카테고리 순서 적용)
+    // "전체" 카테고리: 카테고리 순서대로 가져오기
     if (!category || category === '전체') {
-        filtered.sort((a, b) => {
-            const orderA = CATEGORY_ORDER[a.category] ?? 999;
-            const orderB = CATEGORY_ORDER[b.category] ?? 999;
-            return orderA - orderB;
-        });
+        return getAllCategoriesProducts(offset, limit);
     }
 
-    return filtered.map(p => p.id);
+    // 특정 카테고리: 직접 쿼리
+    const { data: products, error, count } = await supabase
+        .from('products')
+        .select(`
+            *,
+            price_history (
+                price,
+                original_price,
+                discount_rate,
+                is_on_sale,
+                recorded_at
+            )
+        `, { count: 'exact' })
+        .eq('category', category)
+        .order('updated_at', { ascending: false })
+        .range(offset, offset + limit - 1);
+
+    if (error || !products) {
+        console.error('상품 조회 오류:', error);
+        return { products: [], total: 0, hasMore: false };
+    }
+
+    const total = count || 0;
+
+    // 쿠폰 & 최저가 정보 가져오기
+    const brands = [...new Set(products.map((p: any) => p.brand))];
+    const productIds = products.map((p: any) => p.id);
+
+    const [couponsResult, lowestPricesResult] = await Promise.all([
+        supabase.from('coupons').select('*').in('brand', brands).eq('is_active', true),
+        supabase.from('price_history').select('product_id, price').in('product_id', productIds)
+    ]);
+
+    const result = transformProductData(products, couponsResult.data || [], lowestPricesResult.data || []);
+
+    return {
+        products: result,
+        total,
+        hasMore: offset + products.length < total
+    };
+}
+
+/**
+ * "전체" 카테고리용: 카테고리 순서대로 상품 가져오기
+ * offset과 limit을 카테고리 순서에 맞게 분배
+ */
+async function getAllCategoriesProducts(offset: number, limit: number): Promise<{ products: ProductWithPrice[]; total: number; hasMore: boolean }> {
+    const categoryList = Object.keys(CATEGORY_ORDER);
+
+    // 전체 상품 수 조회
+    const { count: totalCount } = await supabase
+        .from('products')
+        .select('id', { count: 'exact', head: true });
+
+    const total = totalCount || 0;
+
+    // 각 카테고리별 상품 수 조회
+    const { data: categoryCounts } = await supabase
+        .from('products')
+        .select('category')
+        .then(async (res) => {
+            // 카테고리별 카운트 계산
+            const countMap: Record<string, number> = {};
+            res.data?.forEach((p: any) => {
+                countMap[p.category] = (countMap[p.category] || 0) + 1;
+            });
+            return { data: countMap };
+        });
+
+    // offset 위치 찾기 - 어떤 카테고리의 몇 번째부터 시작해야 하는지
+    let skipCount = offset;
+    let startCategoryIndex = 0;
+    let startOffsetInCategory = 0;
+
+    for (let i = 0; i < categoryList.length; i++) {
+        const catName = categoryList[i];
+        const catCount = categoryCounts?.[catName] || 0;
+
+        if (skipCount < catCount) {
+            startCategoryIndex = i;
+            startOffsetInCategory = skipCount;
+            break;
+        }
+        skipCount -= catCount;
+
+        // 마지막 카테고리까지 왔으면 끝
+        if (i === categoryList.length - 1) {
+            return { products: [], total, hasMore: false };
+        }
+    }
+
+    // 필요한 만큼 카테고리별로 상품 가져오기
+    let collected: any[] = [];
+    let remaining = limit;
+
+    for (let i = startCategoryIndex; i < categoryList.length && remaining > 0; i++) {
+        const catName = categoryList[i];
+        const catOffset = i === startCategoryIndex ? startOffsetInCategory : 0;
+
+        const { data: products } = await supabase
+            .from('products')
+            .select(`
+                *,
+                price_history (
+                    price,
+                    original_price,
+                    discount_rate,
+                    is_on_sale,
+                    recorded_at
+                )
+            `)
+            .eq('category', catName)
+            .order('updated_at', { ascending: false })
+            .range(catOffset, catOffset + remaining - 1);
+
+        if (products && products.length > 0) {
+            collected = [...collected, ...products];
+            remaining -= products.length;
+        }
+    }
+
+    if (collected.length === 0) {
+        return { products: [], total, hasMore: false };
+    }
+
+    const brands = [...new Set(collected.map((p: any) => p.brand))];
+    const productIds = collected.map((p: any) => p.id);
+
+    const [couponsResult, lowestPricesResult] = await Promise.all([
+        supabase.from('coupons').select('*').in('brand', brands).eq('is_active', true),
+        supabase.from('price_history').select('product_id, price').in('product_id', productIds)
+    ]);
+
+    const result = transformProductData(collected, couponsResult.data || [], lowestPricesResult.data || []);
+
+    return {
+        products: result,
+        total,
+        hasMore: offset + collected.length < total
+    };
+}
+
+// 하위 호환성을 위해 기존 함수 유지 (deprecated)
+export async function getOrderedProductIds(category: string): Promise<string[]> {
+    const result = await getProductsPaginated(category, 0, 1000);
+    return result.products.map(p => p.id);
 }
 
 /**
@@ -286,10 +432,13 @@ export async function getProductById(id: string) {
 /**
  * 상품 검색
  */
+/**
+ * 상품 검색
+ */
 export async function searchProducts(query: string, limit: number = 20): Promise<ProductWithPrice[]> {
     if (!query.trim()) return [];
 
-    const { data: products, error } = await supabase
+    let dbQuery = supabase
         .from('products')
         .select(`
       *,
@@ -301,9 +450,25 @@ export async function searchProducts(query: string, limit: number = 20): Promise
         recorded_at
       )
     `)
-        .or(`name.ilike.%${query}%,brand.ilike.%${query}%`)
         .order('updated_at', { ascending: false })
         .limit(limit);
+
+    // 검색어를 공백으로 분리하여 각 단어가 이름이나 브랜드에 포함되는지 확인 (AND 조건)
+    // 특수문자 이스케이프: PostgREST 필터 문법과 충돌하는 문자(괄호, 콤마 등)를 공백으로 치환
+    // 이렇게 하면 "7종(단품/기획)" -> "7종 단품 기획" 으로 변환되어 각각의 단어로 검색됨
+    const sanitizedQuery = query.replace(/[(),\[\]\/]/g, ' ');
+
+    // 공백으로 분리하여 각 단어가 이름이나 브랜드에 포함되는지 확인 (AND 조건)
+    const terms = sanitizedQuery.trim().split(/\s+/);
+
+    for (const term of terms) {
+        if (!term) continue;
+
+        // 각 검색어가 이름 OR 브랜드에 포함되어야 함
+        dbQuery = dbQuery.or(`name.ilike.%${term}%,brand.ilike.%${term}%`);
+    }
+
+    const { data: products, error } = await dbQuery;
 
     if (error || !products) {
         console.error('검색 오류:', error);
@@ -331,7 +496,6 @@ export async function searchProducts(query: string, limit: number = 20): Promise
             is_on_sale: latestPrice?.is_on_sale || false,
             lowest_price: latestPrice?.price || 0,
             is_lowest: false,
-            has_coupon: false,
         } as ProductWithPrice;
     });
 }
@@ -361,6 +525,61 @@ export async function getLowestPriceProducts(limit: number = 10): Promise<Produc
         is_on_sale: item.is_on_sale,
         lowest_price: item.lowest_price,
         is_lowest: true,
-        has_coupon: false,
     } as ProductWithPrice));
+}
+
+/**
+ * 검색어 자동완성 제안
+ */
+export async function getSearchSuggestions(query: string): Promise<string[]> {
+    if (!query || query.length < 2) return [];
+
+    const { data, error } = await supabase
+        .from('products')
+        .select('name')
+        .ilike('name', `%${query}%`)
+        .limit(10);
+
+    if (error) {
+        console.error('자동완성 검색 오류:', error);
+        return [];
+    }
+
+    // 중복 제거 및 단순화
+    const suggestions = Array.from(new Set(data.map(p => p.name)));
+    return suggestions.slice(0, 5);
+}
+
+/**
+ * 검색어 로깅
+ */
+export async function logSearch(query: string, userId?: string) {
+    if (!query.trim()) return;
+
+    const { error } = await supabase
+        .from('search_logs')
+        .insert({
+            query: query.trim(),
+            user_id: userId || null
+        });
+
+    if (error) {
+        console.error('검색어 로깅 오류:', error);
+    }
+}
+
+/**
+ * 인기 검색어 조회
+ */
+export async function getPopularSearches(): Promise<{ query: string; count: number }[]> {
+    const { data, error } = await supabase
+        .from('popular_searches_view')
+        .select('*');
+
+    if (error) {
+        console.error('인기 검색어 조회 오류:', error);
+        return [];
+    }
+
+    return data || [];
 }
